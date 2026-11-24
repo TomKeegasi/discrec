@@ -124,13 +124,24 @@ pnpm tauri:build  # production build
 
 ## How it works
 
-DiscRec uses OS-level audio capture to record what Discord outputs:
+DiscRec uses OS-level audio capture to record what Discord outputs, so everyone *except you*.
 
-- **Windows** — WASAPI per-process loopback (captures only Discord, not system audio)
-- **Linux** — PulseAudio / PipeWire monitor source
-- **macOS** — Virtual audio device (BlackHole)
+- **Windows:** captures only Discord. Discord must be running.
+- **Linux:** sends Discord's audio to a separate capture channel using `pactl` (PipeWire users need `pipewire-pulse`). If DiscRec can't find Discord, it records all system audio instead.
+- **macOS:** install [BlackHole](https://existential.audio/blackhole/), create a **Multi-Output Device** (BlackHole + your speakers) in Audio MIDI Setup, and choose it as Discord's output device. DiscRec records everything sent to BlackHole.
 
-Recordings are saved to `~/Music/DiscRec/` by default (configurable in settings).
+To record yourself too, use the Discord bot, which saves a separate track for every speaker.
+
+DiscRec saves every recording in the same folder (configurable in settings).
+By default, that folder is a `DiscRec` folder inside your Music folder:
+
+| Platform | Default folder |
+|---|---|
+| Windows | `C:\Users\<you>\Music\DiscRec` |
+| macOS | `~/Music/DiscRec` (`/Users/<you>/Music/DiscRec`) |
+| Linux | `~/Music/DiscRec`, or more precisely your XDG Music folder (`$XDG_MUSIC_DIR/DiscRec`). If no Music folder is configured, DiscRec uses `~/DiscRec` instead. |
+
+DiscRec creates the folder automatically the first time you record.
 
 ## Contributing
 
