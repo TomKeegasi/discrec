@@ -2,6 +2,7 @@ use anyhow::{Context as AnyhowContext, Result};
 use serenity::all::{ChannelId, ChannelType, GatewayIntents, GuildId};
 use serenity::async_trait;
 use serenity::client::{Client, Context, EventHandler};
+use serenity::gateway::ShardManager;
 use serenity::model::gateway::Ready;
 use songbird::driver::{Channels, DecodeConfig, DecodeMode, SampleRate};
 use songbird::{Config as SongbirdConfig, CoreEvent, SerenityInit, Songbird};
@@ -42,6 +43,7 @@ impl EventHandler for ReadyNotifier {
 pub struct DiscordBot {
     ctx_store: Arc<RwLock<Option<Context>>>,
     songbird: Option<Arc<Songbird>>,
+    shard_manager: Option<Arc<ShardManager>>,
     ready_flag: Arc<AtomicBool>,
     receiver_state: Arc<TokioMutex<Option<Arc<ReceiverState>>>>,
     is_recording: Arc<AtomicBool>,
@@ -54,6 +56,7 @@ impl DiscordBot {
         Self {
             ctx_store: Arc::new(RwLock::new(None)),
             songbird: None,
+            shard_manager: None,
             ready_flag: Arc::new(AtomicBool::new(false)),
             receiver_state: Arc::new(TokioMutex::new(None)),
             is_recording: Arc::new(AtomicBool::new(false)),
@@ -104,32 +107,62 @@ impl DiscordBot {
             .await
             .context("Failed to create Discord client")?;
 
-        tokio::spawn(async move {
-            if let Err(e) = client.start().await {
+        let shard_manager = Arc::clone(&client.shard_manager);
+
+        let client_task = tokio::spawn(async move {
+            let result = client.start().await;
+            if let Err(ref e) = result {
                 log::error!("Discord client error: {:?}", e);
             }
+            result
         });
 
-        // Wait for ready (up to 15 seconds)
+        // Wait for ready (up to 15 seconds). If the client exits early (bad
+        // token, missing intents, ...) report that error instead of waiting
+        // for the full timeout.
         for _ in 0..150 {
             if self.ready_flag.load(Ordering::SeqCst) {
                 break;
+            }
+            if client_task.is_finished() {
+                return match client_task.await {
+                    Ok(Err(e)) => Err(anyhow::anyhow!("Discord login failed: {}", e)),
+                    Ok(Ok(())) => Err(anyhow::anyhow!("Discord client stopped unexpectedly")),
+                    Err(e) => Err(anyhow::anyhow!("Discord client task failed: {}", e)),
+                };
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
         if !self.ready_flag.load(Ordering::SeqCst) {
+            // Don't leave a half-connected client running in the background.
+            shard_manager.shutdown_all().await;
             anyhow::bail!("Timed out waiting for Discord bot to connect");
         }
 
         self.songbird = Some(songbird_ref);
+        self.shard_manager = Some(shard_manager);
         log::info!("Discord bot connected successfully");
         Ok(())
     }
 
     pub async fn disconnect(&mut self) {
+        // Finalize any in-progress recording so its files are not left truncated.
+        match self.stop_recording().await {
+            Ok(paths) if !paths.is_empty() => {
+                log::info!("Saved {} track(s) before disconnecting", paths.len())
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("Failed to finalize recording on disconnect: {}", e),
+        }
+
         self.ready_flag.store(false, Ordering::SeqCst);
         self.songbird = None;
+        // Actually close the gateway connection; otherwise the old client keeps
+        // running and a reconnect starts a second bot session.
+        if let Some(shard_manager) = self.shard_manager.take() {
+            shard_manager.shutdown_all().await;
+        }
         *self.ctx_store.write().await = None;
         log::info!("Discord bot disconnected");
     }
