@@ -35,12 +35,6 @@
   --color-border: #d0d0de;
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
 body {
   font-family: "Inter", system-ui, -apple-system, sans-serif;
   background-color: var(--color-bg-primary);
