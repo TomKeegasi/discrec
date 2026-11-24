@@ -6,7 +6,7 @@ use serenity::gateway::ShardManager;
 use serenity::model::gateway::Ready;
 use songbird::driver::{Channels, DecodeConfig, DecodeMode, SampleRate};
 use songbird::{Config as SongbirdConfig, CoreEvent, SerenityInit, Songbird};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex as TokioMutex, RwLock};
 
@@ -29,12 +29,15 @@ pub struct VoiceChannelInfo {
 struct ReadyNotifier {
     ctx_store: Arc<RwLock<Option<Context>>>,
     ready_flag: Arc<AtomicBool>,
+    bot_user_id: Arc<AtomicU64>,
 }
 
 #[async_trait]
 impl EventHandler for ReadyNotifier {
     async fn ready(&self, ctx: Context, ready: Ready) {
         log::info!("Discord bot connected as {}", ready.user.name);
+        self.bot_user_id
+            .store(ready.user.id.get(), Ordering::SeqCst);
         *self.ctx_store.write().await = Some(ctx);
         self.ready_flag.store(true, Ordering::SeqCst);
     }
@@ -45,6 +48,7 @@ pub struct DiscordBot {
     songbird: Option<Arc<Songbird>>,
     shard_manager: Option<Arc<ShardManager>>,
     ready_flag: Arc<AtomicBool>,
+    bot_user_id: Arc<AtomicU64>,
     receiver_state: Arc<TokioMutex<Option<Arc<ReceiverState>>>>,
     is_recording: Arc<AtomicBool>,
     peak_level_bits: Arc<AtomicU32>,
@@ -58,6 +62,7 @@ impl DiscordBot {
             songbird: None,
             shard_manager: None,
             ready_flag: Arc::new(AtomicBool::new(false)),
+            bot_user_id: Arc::new(AtomicU64::new(0)),
             receiver_state: Arc::new(TokioMutex::new(None)),
             is_recording: Arc::new(AtomicBool::new(false)),
             peak_level_bits: Arc::new(AtomicU32::new(0)),
@@ -90,6 +95,7 @@ impl DiscordBot {
         let handler = ReadyNotifier {
             ctx_store: Arc::clone(&self.ctx_store),
             ready_flag: Arc::clone(&self.ready_flag),
+            bot_user_id: Arc::clone(&self.bot_user_id),
         };
 
         // Songbird's default receive mode only decrypts packets, which leaves
@@ -288,6 +294,11 @@ impl DiscordBot {
         let gid = GuildId::new(guild_id);
         let cid = ChannelId::new(channel_id);
 
+        let bot_user_id = self.bot_user_id.load(Ordering::SeqCst);
+
+        // Count only people: once recording, our own bot sits in the channel,
+        // and counting it meant the count never dropped to 0, so auto-record
+        // never stopped. Other bots (music bots etc.) are skipped too.
         let count = ctx
             .cache
             .guild(gid)
@@ -296,6 +307,16 @@ impl DiscordBot {
                     .voice_states
                     .values()
                     .filter(|vs| vs.channel_id == Some(cid))
+                    .filter(|vs| vs.user_id.get() != bot_user_id)
+                    .filter(|vs| {
+                        let is_bot = vs
+                            .member
+                            .as_ref()
+                            .map(|m| m.user.bot)
+                            .or_else(|| guild.members.get(&vs.user_id).map(|m| m.user.bot))
+                            .unwrap_or(false);
+                        !is_bot
+                    })
                     .count()
             })
             .unwrap_or(0);
