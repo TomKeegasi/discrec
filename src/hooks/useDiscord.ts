@@ -52,10 +52,22 @@ export function useDiscord() {
       setError(null);
       setConnecting(true);
       await invoke("discord_connect", { token });
-      await invoke("save_bot_token", { token });
+      // The bot is connected from here on, so the UI must reflect that even if
+      // a later step fails; otherwise the backend stays connected while the UI
+      // shows "disconnected", and retrying fails with "Already connected".
+      setState("connected");
+      try {
+        await invoke("save_bot_token", { token });
+      } catch (e) {
+        // No usable OS keychain (e.g. no Secret Service on Linux). The bot still
+        // works for this session; it just won't reconnect automatically.
+        console.warn("Could not save bot token to the OS keychain:", e);
+        setError(
+          `Connected, but the token could not be saved to your keychain, so you will need to paste it again next time (${String(e)})`
+        );
+      }
       const g = await invoke<GuildInfo[]>("discord_list_guilds");
       setGuilds(g);
-      setState("connected");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -150,11 +162,15 @@ export function useDiscord() {
 
   // Load saved token on mount
   useEffect(() => {
-    invoke<string | null>("load_bot_token").then((token) => {
-      if (token) {
-        connect(token);
-      }
-    });
+    invoke<string | null>("load_bot_token")
+      .then((token) => {
+        if (token) {
+          connect(token);
+        }
+      })
+      .catch((e) => {
+        console.warn("Could not read bot token from the OS keychain:", e);
+      });
     return () => clearTimers();
   }, [connect, clearTimers]);
 
