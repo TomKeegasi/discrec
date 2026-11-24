@@ -171,15 +171,19 @@ impl DiscordBot {
         let ctx_guard = self.ctx_store.read().await;
         let ctx = ctx_guard.as_ref().context("Not connected to Discord")?;
 
+        // Ask the REST API rather than the cache: `ready` fires before the
+        // GUILD_CREATE events arrive, so right after connecting the cache only
+        // knows the guild IDs and `cache.guild()` returns None for all of them,
+        // leaving the server list empty.
         let guilds: Vec<GuildInfo> = ctx
-            .cache
-            .guilds()
-            .iter()
-            .filter_map(|gid| {
-                ctx.cache.guild(*gid).map(|g| GuildInfo {
-                    id: gid.to_string(),
-                    name: g.name.clone(),
-                })
+            .http
+            .get_guilds(None, Some(200))
+            .await
+            .context("Failed to fetch servers")?
+            .into_iter()
+            .map(|g| GuildInfo {
+                id: g.id.to_string(),
+                name: g.name,
             })
             .collect();
 
