@@ -71,7 +71,22 @@ impl AudioCapture {
             })
         };
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        let handle = {
+            thread::spawn(move || -> Result<Option<String>> {
+                capture_pulse(
+                    &path,
+                    format,
+                    silence_trim,
+                    max_duration_secs,
+                    &is_recording,
+                    &peak_level_bits,
+                    &stop_rx,
+                )
+            })
+        };
+
+        #[cfg(target_os = "macos")]
         let handle = {
             thread::spawn(move || -> Result<Option<String>> {
                 capture_cpal(
@@ -303,10 +318,10 @@ fn capture_windows(
 }
 
 // ---------------------------------------------------------------------------
-// Linux / macOS: cpal-based loopback capture (system audio)
+// macOS: cpal-based capture from a virtual loopback device (BlackHole)
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn capture_cpal(
     path: &str,
     format: AudioFormat,
@@ -324,21 +339,12 @@ fn capture_cpal(
     use std::time::{Duration, Instant};
 
     let host = cpal::default_host();
-
-    // On Linux, try per-app Discord routing via PulseAudio/PipeWire
-    #[cfg(target_os = "linux")]
-    let _routing = pulse_routing::DiscordRouting::setup();
-
-    #[cfg(target_os = "linux")]
-    let preferred_source = _routing.as_ref().map(|r| r.monitor_source());
-
-    #[cfg(not(target_os = "linux"))]
-    let preferred_source: Option<&str> = None;
-
-    let device = get_loopback_device(&host, preferred_source)?;
+    let device = get_loopback_device(&host)?;
+    // This is an input stream, so it must be configured with the device's
+    // *input* config (it used the output config before).
     let config = device
-        .default_output_config()
-        .context("Failed to get default output config")?;
+        .default_input_config()
+        .context("Failed to get default input config")?;
 
     log::info!(
         "Recording from: {} (format: {:?}, rate: {}, channels: {})",
@@ -609,54 +615,193 @@ mod pulse_routing {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Linux: capture from a PulseAudio / PipeWire monitor source via `parec`
+// ---------------------------------------------------------------------------
+//
+// cpal 0.15 only talks to ALSA on Linux, and ALSA device names never include
+// PulseAudio/PipeWire sources such as `discrec_capture.monitor`. Capturing
+// through cpal therefore always fell back to ALSA's default *input* (the
+// microphone, or a raw hardware device that PipeWire already holds, which
+// fails with "Failed to build input stream"). `parec` records straight from a
+// named source, works with both PulseAudio and PipeWire (via pipewire-pulse),
+// and ships in the same package as `pactl`, which the Discord routing above
+// already requires.
+
 #[cfg(target_os = "linux")]
-fn get_loopback_device(host: &cpal::Host, preferred_source: Option<&str>) -> Result<cpal::Device> {
+const PULSE_RATE: u32 = 48_000;
+#[cfg(target_os = "linux")]
+const PULSE_CHANNELS: u16 = 2;
+
+#[cfg(target_os = "linux")]
+fn capture_pulse(
+    path: &str,
+    format: AudioFormat,
+    silence_trim: bool,
+    max_duration_secs: Option<u32>,
+    is_recording: &Arc<AtomicBool>,
+    peak_level_bits: &Arc<AtomicU32>,
+    stop_rx: &mpsc::Receiver<StreamMsg>,
+) -> Result<Option<String>> {
+    use super::encoder::AudioEncoder;
     use anyhow::Context;
-    use cpal::traits::{DeviceTrait, HostTrait};
+    use parking_lot::Mutex;
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
 
-    // Log available input devices for debugging
-    if let Ok(devices) = host.input_devices() {
-        let names: Vec<String> = devices.filter_map(|d| d.name().ok()).collect();
-        log::info!("Available input devices: {:?}", names);
-    }
-
-    // If we have a preferred source (from per-app routing), find it
-    if let Some(preferred) = preferred_source {
-        if let Some(device) = host
-            .input_devices()?
-            .find(|d| d.name().map(|n| n.contains(preferred)).unwrap_or(false))
-        {
-            log::info!(
-                "Using per-app capture device: {}",
-                device.name().unwrap_or_default()
+    // Route only Discord into our capture sink if possible; otherwise record
+    // everything that plays on the default output.
+    let routing = pulse_routing::DiscordRouting::setup();
+    let source = match routing.as_ref() {
+        Some(r) => r.monitor_source().to_string(),
+        None => {
+            log::warn!(
+                "Discord audio stream not found (is Discord running and in a call?) \
+                 — recording all system audio from the default output instead"
             );
-            return Ok(device);
+            "@DEFAULT_MONITOR@".to_string()
         }
-        log::warn!("Preferred source '{preferred}' not found, falling back to monitor");
-    }
+    };
 
-    // PulseAudio/PipeWire monitor sources contain "monitor" in the name
-    let monitor_keywords = ["monitor", "Monitor"];
-    if let Some(device) = host.input_devices()?.find(|d| {
-        d.name()
-            .map(|n| monitor_keywords.iter().any(|kw| n.contains(kw)))
-            .unwrap_or(false)
-    }) {
-        log::info!(
-            "Found monitor device: {}",
-            device.name().unwrap_or_default()
+    let mut child = Command::new("parec")
+        .args([
+            "--device",
+            &source,
+            "--raw",
+            "--format=float32le",
+            &format!("--rate={PULSE_RATE}"),
+            &format!("--channels={PULSE_CHANNELS}"),
+            "--latency-msec=50",
+            "--client-name=DiscRec",
+            "--stream-name=Recording",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context(
+            "Could not start `parec`. Install the PulseAudio client tools \
+             (Arch: libpulse, Debian/Ubuntu: pulseaudio-utils)",
+        )?;
+
+    // Catch an immediate failure (no PulseAudio/PipeWire server, unknown
+    // source, ...) before creating an empty recording file.
+    std::thread::sleep(Duration::from_millis(300));
+    if let Some(status) = child.try_wait()? {
+        let mut err = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            let _ = stderr.read_to_string(&mut err);
+        }
+        anyhow::bail!(
+            "Audio capture failed to start ({}): {}. Is PulseAudio or PipeWire (with pipewire-pulse) running?",
+            status,
+            err.trim()
         );
-        return Ok(device);
     }
 
-    // Fallback to default input (e.g. microphone)
-    log::warn!("No monitor device found, falling back to default input");
-    host.default_input_device()
-        .context("No input device available. Ensure PulseAudio or PipeWire is running.")
+    log::info!(
+        "Recording from: {} ({} Hz, {} channels, f32)",
+        source,
+        PULSE_RATE,
+        PULSE_CHANNELS
+    );
+
+    let encoder = create_encoder(path, PULSE_CHANNELS, PULSE_RATE, format, silence_trim)?;
+    let encoder: Arc<Mutex<Option<Box<dyn AudioEncoder>>>> = Arc::new(Mutex::new(Some(encoder)));
+
+    let mut stdout = child.stdout.take().context("parec has no stdout")?;
+    let writer_ref = Arc::clone(&encoder);
+    let rec_flag = Arc::clone(is_recording);
+    let peak_bits = Arc::clone(peak_level_bits);
+
+    // Reader thread: parec -> f32 samples -> encoder. Ends at EOF, which
+    // happens when parec is stopped below.
+    let reader = thread::spawn(move || {
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut carry: Vec<u8> = Vec::with_capacity(4);
+        loop {
+            let n = match stdout.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    log::error!("Failed to read audio from parec: {}", e);
+                    break;
+                }
+            };
+
+            // Reads are not guaranteed to end on a 4-byte sample boundary.
+            carry.extend_from_slice(&buf[..n]);
+            let whole = carry.len() - carry.len() % 4;
+            let samples: Vec<f32> = carry[..whole]
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            carry.drain(..whole);
+
+            if !rec_flag.load(Ordering::Relaxed) {
+                continue;
+            }
+            let peak = samples.iter().fold(0.0f32, |max, &s| max.max(s.abs()));
+            peak_bits.store(peak.to_bits(), Ordering::Relaxed);
+
+            let mut guard = writer_ref.lock();
+            let Some(w) = guard.as_mut() else { break };
+            for &sample in &samples {
+                if let Err(e) = w.write_sample(sample) {
+                    log::error!("Failed to write sample: {}", e);
+                    return;
+                }
+            }
+        }
+    });
+
+    log::info!("Recording started: {}", path);
+
+    // Block until stop signal, max duration, or parec dying on its own.
+    let start_time = Instant::now();
+    loop {
+        match stop_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(_) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(max_secs) = max_duration_secs {
+                    if start_time.elapsed().as_secs() >= max_secs as u64 {
+                        log::info!("Max recording duration ({max_secs}s) reached, auto-stopping");
+                        is_recording.store(false, Ordering::Relaxed);
+                        break;
+                    }
+                }
+                if let Ok(Some(status)) = child.try_wait() {
+                    log::error!("parec exited unexpectedly ({status}); stopping recording");
+                    is_recording.store(false, Ordering::Relaxed);
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    // Stop parec, let the reader drain to EOF, then finalize the file.
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+
+    let result = if let Some(w) = encoder.lock().take() {
+        let p = w.path().to_string();
+        w.finalize()?;
+        log::info!("Recording saved: {}", p);
+        Some(p)
+    } else {
+        None
+    };
+
+    // Restores Discord to its original output and removes our modules.
+    drop(routing);
+
+    Ok(result)
 }
 
 #[cfg(target_os = "macos")]
-fn get_loopback_device(host: &cpal::Host, _preferred_source: Option<&str>) -> Result<cpal::Device> {
+fn get_loopback_device(host: &cpal::Host) -> Result<cpal::Device> {
     use anyhow::Context;
     use cpal::traits::{DeviceTrait, HostTrait};
 
