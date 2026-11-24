@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged by Tauri into the generated macOS Info.plist (bundles and `tauri dev`).
+  Tauri picks this file up automatically because it sits next to tauri.conf.json.
+-->
+<plist version="1.0">
+<dict>
+	<!--
+	  Required by macOS before an app may open any audio input device. DiscRec
+	  records Discord on macOS by reading a virtual input device (BlackHole), so
+	  without this key macOS blocks the app or delivers silence instead of audio.
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DiscRec records Discord audio through a virtual audio device such as BlackHole. macOS treats that device as a microphone input, so DiscRec needs microphone access to record.</string>
+</dict>
+</plist>
