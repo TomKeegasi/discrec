@@ -19,13 +19,13 @@ Built with [Tauri v2](https://tauri.app) (Rust) and React. Cross-platform: Windo
 
 - **One-click recording** — press record to capture Discord audio instantly
 - **Multiple formats** — WAV (lossless), FLAC (lossless compressed), MP3 (192 kbps)
-- **Discord bot integration** — connect a bot to record per-speaker audio tracks with Discord usernames
-- **Auto-record** — automatically start recording when someone joins a voice channel
+- **Discord bot integration** — connect a bot to record per-speaker audio tracks with Discord display names
+- **Auto-record** — automatically start recording when someone joins a voice channel (bot mode)
 - **Per-process capture** — records only Discord audio, not your entire system (Windows)
-- **Silence trim** — automatically skips leading silence in recordings
+- **Silence trim** — automatically skips leading silence in recordings when enabled
 - **Auto-updater** — get notified and install updates directly from the app
 - **Configurable output directory** — choose where recordings are saved
-- **Keyboard shortcuts** — Ctrl+R to record, Ctrl+S or Escape to stop
+- **Keyboard shortcuts** — Ctrl+R to record, Ctrl+S or Escape to stop (changed in settings)
 - **Dark / light theme** — switch in settings, persisted across sessions
 - **Live audio meter** — real-time level visualization with smooth decay and peak hold
 - **Recording history** — browse, open folder, or delete past recordings from settings
