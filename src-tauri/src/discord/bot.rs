@@ -241,8 +241,17 @@ impl DiscordBot {
             .await
             .context("Failed to join voice channel")?;
 
+        let (cache, http) = {
+            let ctx_guard = self.ctx_store.read().await;
+            let ctx = ctx_guard.as_ref().context("Not connected to Discord")?;
+            (Arc::clone(&ctx.cache), Arc::clone(&ctx.http))
+        };
+
         // Create shared receiver state
         let recv_state = ReceiverState::new(
+            cache,
+            http,
+            gid,
             output_dir,
             format,
             Arc::clone(&self.is_recording),
