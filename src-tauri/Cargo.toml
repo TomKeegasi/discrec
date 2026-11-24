@@ -6,7 +6,7 @@ authors = ["jmpijll"]
 license = "MIT"
 repository = "https://github.com/jmpijll/discrec"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.83"
 
 [lib]
 name = "discrec_lib"
@@ -33,7 +33,7 @@ parking_lot = "0.12"
 anyhow = "1.0"
 tokio = { version = "1", features = ["sync", "time", "macros"] }
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "cache", "voice"] }
-songbird = { version = "0.4", features = ["receive", "serenity", "rustls"] }
+songbird = { version = "0.6", features = ["receive", "serenity", "rustls"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 mp3lame-encoder = "0.2"
 tauri-plugin-updater = "2"

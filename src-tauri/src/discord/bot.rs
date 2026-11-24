@@ -3,7 +3,8 @@ use serenity::all::{ChannelId, ChannelType, GatewayIntents, GuildId};
 use serenity::async_trait;
 use serenity::client::{Client, Context, EventHandler};
 use serenity::model::gateway::Ready;
-use songbird::{CoreEvent, SerenityInit, Songbird};
+use songbird::driver::{Channels, DecodeConfig, DecodeMode, SampleRate};
+use songbird::{Config as SongbirdConfig, CoreEvent, SerenityInit, Songbird};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex as TokioMutex, RwLock};
@@ -88,7 +89,13 @@ impl DiscordBot {
             ready_flag: Arc::clone(&self.ready_flag),
         };
 
-        let songbird = Songbird::serenity();
+        // Songbird's default receive mode only decrypts packets, which leaves
+        // `VoiceData::decoded_voice` empty. Decode to 48 kHz mono PCM, which is
+        // what `ReceiverState` writes into each per-speaker encoder.
+        let songbird_config = SongbirdConfig::default().decode_mode(DecodeMode::Decode(
+            DecodeConfig::new(Channels::Mono, SampleRate::Hz48000),
+        ));
+        let songbird = Songbird::serenity_from_config(songbird_config);
         let songbird_ref = Arc::clone(&songbird);
 
         let mut client = Client::builder(token, intents)
