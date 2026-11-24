@@ -1,10 +1,13 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg-primary: #0f0f13;
-  --color-bg-secondary: #1a1a24;
-  --color-bg-card: #16161e;
-  --color-bg-elevated: #1e1e2a;
+  /* Dark theme surfaces: a lighter charcoal close to Discord's own dark mode,
+     instead of near-black. Order is kept: primary (page, inputs) < card <
+     secondary < elevated (hover, raised buttons). */
+  --color-bg-primary: #2b2d31;
+  --color-bg-secondary: #383a40;
+  --color-bg-card: #313338;
+  --color-bg-elevated: #404249;
   --color-accent: #5865f2;
   --color-accent-hover: #4752c4;
   --color-record: #ed4245;
@@ -12,8 +15,8 @@
   --color-success: #57f287;
   --color-text-primary: #ffffff;
   --color-text-secondary: #b5bac1;
-  --color-text-muted: #6d6f78;
-  --color-border: #2a2a3a;
+  --color-text-muted: #949ba4;
+  --color-border: #4e5058;
 }
 
 [data-theme="light"] {
